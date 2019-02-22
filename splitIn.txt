@@ -1,0 +1,163 @@
+Shader "Outline/spilitIn"
+{
+	Properties{
+		_Color("Main Color", Color) = (.5,.5,.5,1)
+		_OutlineColor("Outline Color", Color) = (0,0,0,1)
+		_Outline("Outline width", Range(0.0, 0.05)) = .005
+		_MainTex("Base (RGB)", 2D) = "white" { }
+		_ToonShade("ToonShader Cubemap(RGB)", CUBE) = "" { }
+		_TimeMinuteY("Time", Range(10.0, 200.0)) = 10.0
+		_VertexY("Vertex", Range(10.0, 200.0)) = 10.0
+	}
+
+	CGINCLUDE
+	#include "UnityCG.cginc"
+
+	struct appdata {
+		float4 vertex : POSITION;
+		float3 normal : NORMAL;
+		float2 uv : TEXCOORD0;
+	};
+
+	struct v2f {
+		float4 pos : POSITION;
+		UNITY_FOG_COORDS(0)
+		float4 color : COLOR;
+	};
+
+	uniform float _Outline;
+	//Outlineの大きさ
+	uniform float4 _OutlineColor;
+	//Outlineの色
+	uniform float _TimeMinuteY;
+	//時間・・値を大きくすると１秒あたりの回数増加
+	uniform float _VertexY;
+	//変位・・sinの値を変える用
+
+	v2f vert(appdata v) {
+		v2f o;
+		o.pos = UnityObjectToClipPos(v.vertex);
+		//オブジェクト空間からクリッピング空間へ点を変換
+
+		float3 norm = mul((float3x3)UNITY_MATRIX_IT_MV, v.normal);
+		//normalize -> magnitudeを１としたベクトル作成
+		//mul　-> モデル(ワールド)→ビューの逆行列と法線ベクトルを乗算してる
+		//乗算したベクトルを正規化して大きさを１にする
+		float2 offset = TransformViewToProjection(norm.xy);
+		//ビュー空間を切り取り、手前の物が大きく遠くが小さくなるようにする。
+
+		float amp = 0.5 * sin(_Time * _TimeMinuteY + dot(v.vertex.x, v.vertex.y) * _VertexY);
+		//頂点のｙ座標ごとにsinで動かす
+
+		#ifdef UNITY_Z_0_FAR_FROM_CLIPSPACE
+			o.pos.x += offset * UNITY_Z_0_FAR_FROM_CLIPSPACE(o.pos.z) * _Outline * amp * v.uv.x * v.uv.x;
+			//uvをかけることで変位を制限する
+			o.pos.y += offset * UNITY_Z_0_FAR_FROM_CLIPSPACE(o.pos.z) * _Outline * amp;
+		#else
+			o.pos.x += offset * o.pos.z * _Outline * amp * frac(amp);
+		#endif
+		o.color = _OutlineColor;
+		UNITY_TRANSFER_FOG(o, o.pos);
+		return o;
+	}
+	ENDCG
+
+	//１つ目のSubShaderでCullOffにしOutlineを全面描画する。
+	SubShader{
+		Tags{ "Queue" = "Transparent" }
+		Pass{
+			Name "OUTLINE"
+			Tags{ "LightMode" = "Always" }
+			Cull Off
+			ZWrite Off
+			ColorMask RGB
+			Blend SrcAlpha OneMinusSrcAlpha 
+
+			CGPROGRAM
+			#pragma vertex vert
+			#pragma fragment frag
+
+			half4 frag(v2f i) :COLOR{
+				return i.color;
+			}
+			ENDCG
+		}
+
+		//Unity内のToonBase
+		Pass{
+			Name "Base"
+			Cull Off
+
+			CGPROGRAM
+			#pragma vertex vert
+			#pragma fragment frag
+			#pragma multi_compile_fog
+
+			#include "UnityCG.cginc"
+
+			sampler2D _MainTex;
+			samplerCUBE _ToonShade;
+			float4 _MainTex_ST;
+			float4 _Color;
+
+			struct appdata2 {
+				float4 vertex : POSITION;
+				float2 texcoord : TEXCOORD0;
+				float3 normal : NORMAL;
+			};
+
+			struct v2f2 {
+				float4 pos : SV_POSITION;
+				float2 texcoord : TEXCOORD0;
+				float3 cubenormal : TEXCOORD1;
+				UNITY_FOG_COORDS(2)
+			};
+
+			v2f2 vert(appdata2 v)
+			{
+				v2f2 o;
+				o.pos = UnityObjectToClipPos(v.vertex);
+				o.texcoord = TRANSFORM_TEX(v.texcoord, _MainTex);
+				o.cubenormal = mul(UNITY_MATRIX_MV, float4(v.normal,0));
+				UNITY_TRANSFER_FOG(o,o.pos);
+				return o;
+			}
+
+			fixed4 frag(v2f2 i) : SV_Target
+			{
+				fixed4 col = _Color * tex2D(_MainTex, i.texcoord);
+				fixed4 cube = texCUBE(_ToonShade, i.cubenormal);
+				fixed4 c = fixed4(2.0f * cube.rgb * col.rgb, col.a);
+				UNITY_APPLY_FOG(i.fogCoord, c);
+				return c;
+			}
+			ENDCG
+		}
+	}
+	
+	//２つ目のSubShaderでカメラ側のアウトラインの描画をなし
+	SubShader{
+		Tags{ "Queue" = "Transparent" }
+		Pass{
+			Name "OUTLINE"
+			Tags{ "LightMode" = "Always" }
+			Cull Front
+			ZWrite Off
+			ColorMask RGB
+			Blend SrcAlpha OneMinusSrcAlpha
+
+			CGPROGRAM
+			#pragma vertex vert
+			ENDCG
+		}
+
+		Pass{
+			Name "Base"
+			Zwrite On
+			ZTest LEqual
+			Blend SrcAlpha OneMinusSrcAlpha
+			
+			}
+	}
+	Fallback "Diffuse"
+}
